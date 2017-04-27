@@ -1,0 +1,203 @@
+---
+title: "Análise preliminar: planos de saúde"
+author: "Julio Trecenti"
+date: "April 26, 2017"
+output: html_document
+---
+
+# Introdução
+
+Nessa análise preliminar consideramos acórdãos do TJSP com assunto "Planos de saúde". Esse filtro não é ideal para a análise pois existem processos envolvendo planos de saúde classificados em outros assuntos. No entanto, para um primeiro estudo esse escopo é suficiente.
+
+A análise passa por três etapas, descritas abaixo.
+
+- **Download**. Utilizamos os pacotes `esaj` e `tjsp` para baixar listas de processos automaticamente do TJSP.
+- **Limpeza**. Seleção e transformação das variáveis.
+- **Análise descritiva**. Alguns gráficos e tabelas sobre os casos baixados.
+
+## Pacotes utilizados
+
+Esse relatório foi construído em **RMarkdown** e é completamente reprodutível. Os pacotes utilizados para as análises estão listados abaixo:
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+library(stringr)
+library(forcats)
+library(lubridate)
+library(esaj) # github.com/courtsbr/esaj
+library(tjsp) # github.com/courtsbr/tjsp
+```
+
+# Download
+
+Lista de assuntos do TJSP na Consulta de Julgados do Segundo Grau:
+
+```{r}
+# assuntos <- cjsg_tabs('assuntos')
+# write_rds(assuntos, 'assuntos.rds')
+assuntos <- read_rds('assuntos.rds', compress = 'bz')
+```
+
+Agora pegamos apenas o assunto de planos de saúde.
+
+```{r}
+cod_assuntos <- assuntos %>% 
+  filter(str_detect(titulo_leaf, 'Planos de S')) %>% 
+  with(cod_leaf)
+```
+
+Abrimos uma sessão de conexão com o TJSP e inserimos as informações de pesquisa (somente os assuntos).
+
+```{r}
+s <- cjsg_session()
+parms <- cjsg_parms(s, assunto = cod_assuntos)
+```
+
+O número de documentos no resultado da pesquisa é dado por `cjsg_npags()`:
+
+```{r message=FALSE}
+npags <- cjsg_npags(s, parms = parms)
+npags
+```
+
+A quantidade `r npags` é muito grande! Vamos baixar apenas as primeiras mil páginas (os documentos estão ordenados por data de publicação do acórdão, das mais recentes para as mais antigas.) O download demorou aproximadamente 40 minutos.
+
+```{r eval=FALSE}
+# nao rodar! demora
+d_result <- cjsg(s, parms = parms, path = 'data-raw/cjsg', max_pag = 1000L)
+```
+
+
+Agora, vamos ler o conteúdo desses arquivos HTML. Para isso, utilizamos `cjsg_parse`:
+
+```{r eval=FALSE}
+# nao rodar! demora
+arqs <- dir('data-raw/cjsg', full.names = TRUE)
+d_cjsg <- parse_cjsg(arqs) 
+write_rds(d_cjsg, 'd_cjsg.rds', compress = 'bz')
+```
+
+```{r}
+d_cjsg <- read_rds('d_cjsg.rds')
+d_cjsg
+```
+
+Pronto! Temos uma base de dados com `r nrow(d_cjsg)`. Essa base de dados tem as seguintes informações:
+
+- `arq`: caminho do aquivo HTML.
+- `id`: id do resultado.
+- `cd_acordao`: código único do acórdão.
+- `n_processo`: número do processo (um processo pode ter mais de um acórdão).
+- `comarca`: comarca de origem do processo.
+- `data_julgamento`: data de julgamento do processo.
+- `data_registro`: data de registro da decisão (essa é a data usada para indexar as decisões.)
+- `ementa`: ementa do processo.
+- `orgao_julgador`: nome do órgão julgador.
+- `relatora`: relator(a) do processo.
+- `classe_assunto`: classe e assunto.
+- `txt_ementa`: texto da ementa (geralmente igual à `ementa`.)
+- `result`: indicador de leitura correta da página (geralmente tudo OK.)
+- `outros_numeros`: outros números do processo.
+
+# Limpeza
+
+Vamos utilizar só uma parte dessas colunas. Para limpar os dados e obter a base `d_tidy`, rodamos o seguinte algoritmo.
+
+```{r}
+d_tidy <- d_cjsg %>% 
+  distinct(cd_acordao, .keep_all = TRUE) %>% 
+  select(cd_acordao, n_processo:classe_assunto) %>% 
+  separate(classe_assunto, c('classe', 'assunto'), sep = ' / ',
+           extra = 'merge', fill = 'left') %>% 
+  mutate_at(vars(starts_with('data_')), dmy)
+```
+
+A base total contém 20.000 acórdãos de 17.289 processos.
+
+# Análise descritiva
+
+## Principais classes
+
+```{r}
+d_tidy %>% 
+  mutate(classe = fct_lump(classe, prop = 0.006, 
+                           other_level = 'Outros')) %>% 
+  count(classe, sort = TRUE) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  janitor::add_totals_row() %>% 
+  mutate(prop = scales::percent(prop)) %>% 
+  knitr::kable()
+```
+
+## Evolução no tempo 
+
+(tomar cuidado ao interpretar esse gráfico, pois não baixamos todos os casos!)
+
+```{r}
+d_tidy %>% 
+  mutate(classe = fct_lump(classe, prop = 0.1, other_level = 'Outros')) %>% 
+  mutate(mes_decisao = floor_date(data_julgamento, 'month')) %>% 
+  filter(mes_decisao > '2016-05-01') %>% 
+  count(mes_decisao) %>% 
+  ggplot(aes(x = mes_decisao, y = n)) +
+  geom_line() +
+  geom_point() +
+  labs(x = 'Mês da decisão', 'Quantidade de decisões') +
+  theme_gray(15)
+```
+
+## Comarcas
+
+Nesse caso seria interessante dividir pela população.
+
+```{r}
+d_tidy %>% 
+  mutate(comarca = comarca %>% 
+           fct_infreq() %>% 
+           fct_lump(prop = 0.01, other_level = 'Outros')) %>%
+  count(comarca) %>% 
+  mutate(prop = n / sum(n)) %>% 
+  janitor::add_totals_row() %>% 
+  mutate(prop = scales::percent(prop)) %>% 
+  knitr::kable()
+```
+
+## Relatores
+
+No futuro, seremos capazes de analisar a taxa de decisões favoráveis / desfavoráveis por relator e câmara.
+
+```{r}
+d_tidy %>% 
+  mutate(relatora = relatora %>% 
+           fct_infreq() %>% 
+           fct_lump(prop = 0.02, other_level = 'Outros')) %>%
+  count(relatora) %>% 
+  mutate(prop = n / sum(n)) %>% 
+  janitor::add_totals_row() %>% 
+  mutate(prop = scales::percent(prop)) %>% 
+  knitr::kable()
+```
+
+
+## Exemplos de textos
+
+```{r}
+set.seed(1)
+d_tidy %>% 
+  sample_n(1) %>% 
+  with(ementa) %>% 
+  cat()
+```
+
+
+```{r results='asis'}
+set.seed(1)
+d_tidy %>% 
+  sample_n(5) %>% 
+  with(ementa) %>% 
+  cat(sep = paste0('\n\n', strrep('-', 80), '\n\n'))
+
+```
+
+
+

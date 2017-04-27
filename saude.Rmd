@@ -34,8 +34,8 @@ Lista de assuntos do TJSP na Consulta de Julgados do Segundo Grau:
 
 ```{r}
 # assuntos <- cjsg_tabs('assuntos')
-# write_rds(assuntos, 'assuntos.rds')
-assuntos <- read_rds('assuntos.rds', compress = 'bz')
+# write_rds(assuntos, 'assuntos.rds', compress = 'bz')
+assuntos <- read_rds('assuntos.rds')
 ```
 
 Agora pegamos apenas o assunto de planos de saúde.

@@ -42,8 +42,10 @@ Agora pegamos apenas o assunto de planos de saúde.
 
 ```{r}
 cod_assuntos <- assuntos %>% 
-  filter(str_detect(titulo_leaf, 'Planos de S')) %>% 
-  with(cod_leaf)
+  filter(str_detect(titulo_leaf, 'Planos de S|SUS|M[ée]dic'),
+         !str_detect(titulo0, 'ANTIGO|PENAL|CRIAN[CÇ]A')) %>% 
+  with(cod_leaf) %>% 
+  glue::collapse(',')
 ```
 
 Abrimos uma sessão de conexão com o TJSP e inserimos as informações de pesquisa (somente os assuntos).
@@ -67,6 +69,101 @@ A quantidade `r npags` é muito grande! Vamos baixar apenas as primeiras mil pá
 d_result <- cjsg(s, parms = parms, path = 'data-raw/cjsg', max_pag = 1000L)
 ```
 
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+**Update**: Baixando todas as páginas, mas um ano por vez.
+
+```{r}
+anos <- tibble(
+  anos_ini = ymd('2007-01-01') + years(0:10),
+  anos_fim = ymd('2008-01-01') + years(0:10) - days(1)
+) %>% 
+  transpose() %>% 
+  simplify_all() %>% 
+  map(~as.character(as.Date(.x, origin = '1970-01-01'))) %>% 
+  rev() %>% 
+  tail(1)
+
+
+p <- map_dbl(anos, ~{
+  msg <- glue::glue('\n{year(.x[1])}-------------------\n')
+  cat(msg, sep = '\n')
+  s <- cjsg_session()
+  parms <- cjsg_parms(s, assunto = cod_assuntos, 
+                      data_inicial_reg = .x[1],
+                      data_final_reg = .x[2])
+  # d_result <- cjsg(s, parms = parms, 
+  #                  path = glue::glue('data-raw/cjsg{year(.x[1])}'), 
+  #                  max_pag = Inf)
+  suppressMessages(cjsg_npags(s, parms = parms))
+})
+p
+
+np <- map_dbl(dir('data-raw', pattern = '[0-9]', full.names = TRUE), 
+              ~length(dir(.x))) %>% 
+  rev()
+p - np
+
+all_pages <- dir('data-raw', pattern = '[0-9]', full.names = TRUE) %>% 
+  map(dir, full.names = TRUE) %>% 
+  flatten_chr()
+
+dados <- parse_cjsg(all_pages)
+```
+
+
+--------------------------------------------------------------------------------
+
+# cposg
+
+```{r}
+dados <- readRDS('data-raw/cjsg.rds')
+d_cjsg <- dados %>% 
+  mutate(data_registro = dmy(data_registro),
+         ano_registro = year(data_registro))
+
+
+cposg_um <- function (p, path, ow) {
+  if (runif(1) < .01) cat(length(dir(path)), '\n')
+  arq <- sprintf("%s/%s.html", path, p)
+  if (!file.exists(arq) || ow) {
+    httr::GET("https://esaj.tjsp.jus.br/cposg/search.do",
+              query = tjsp:::dados_cposg(p), 
+              config = httr::config(ssl_verifypeer = FALSE), 
+      httr::write_disk(arq, overwrite = ow))
+    tibble::tibble(result = "OK")
+  } else {
+    tibble::tibble(result = "já existe")
+  }
+}
+
+result <- purrr::map_df(2015:2008, ~{
+  cat(glue::glue('\n\n{.x}-------------------\n\n'), sep = '\n')
+  pasta <- glue::glue('data-raw/cpopg{.x}')
+  dir.create(pasta, recursive = TRUE, showWarnings = FALSE)
+  processos <- d_cjsg %>% 
+    filter(ano_registro == .x) %>% 
+    distinct(n_processo) %>% 
+    with(n_processo) %>% 
+    str_replace_all('[^0-9]', '')
+  cat('Total: ', length(processos), '\n\n')
+  cl <- parallel::makeCluster(parallel::detectCores(), outfile = "")
+  doParallel::registerDoParallel(cl)
+  safe_cposg <- possibly(cposg_um, tibble(result = 'erro'))
+  l <- plyr::llply(processos, safe_cposg, path = pasta, ow = FALSE)
+  parallel::stopCluster(cl)
+  bind_rows(l)
+}, .id = 'ano')
+
+```
+
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 
 Agora, vamos ler o conteúdo desses arquivos HTML. Para isso, utilizamos `cjsg_parse`:
 

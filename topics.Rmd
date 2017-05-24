@@ -1,0 +1,160 @@
+---
+title: "Topic models"
+date: "May 24, 2017"
+output: html_document
+---
+
+--------------------------------------------------------------------------------
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(topicmodels)
+library(ptwikiwords)
+library(ptstem)
+library(rslp)
+
+d_txt <- readRDS('data-raw/cjsg.rds') %>% 
+  filter(!is.na(ementa)) %>% 
+  filter(!str_detect(tolower(classe_assunto), 'embargo|agravo')) %>% 
+  mutate(data_registro = dmy(data_registro)) %>% 
+  arrange(desc(data_registro)) %>% 
+  filter(year(data_registro) >= 2015)
+```
+
+--------------------------------------------------------------------------------
+
+```{r}
+pt_stops <- tm::stopwords('pt-br')
+pt_direito     <- c("ação", "acolhimento", "acórdão",
+                    "advocatício", "advogado", 
+                    "agravo", "alçada", "alegação", 
+                    "apelo", "apelação", "apenso",
+                    "aplicação",
+                    "artigo", "autos", "autor", "ato",
+                    "causa", "câmara", "cível", "civil", 
+                    "código", "comarca", "comprovação", "condenação",
+                    "dano", "data",
+                    "decisão", "declaração", "decorrente", 
+                    "defesa", "dever", "desembargador", "devolução",
+                    "diante", "direito",
+                    "embargo", "ementa", "estado", "exposto", 
+                    "fato", "fundamento",
+                    "honorários", "inicial",
+                    "improcedência", "improcedente", "improvimento", 
+                    "indevido",
+                    "instância", "instrumento",
+                    "interposto",
+                    "judiciário", 
+                    "juiz", "julgamento", 
+                    "jurídico", "jurisprudência", "juros", 
+                    "justiça",
+                    "lei", "lide", 
+                    "matéria", "materialmente", "mérito", 
+                    "monocrático", "mora",
+                    "nome",
+                    "objeto",
+                    "parcial", "parte", "passivo",
+                    "pedido", "petição",
+                    "pleitear", "poder",
+                    "prejuízo", "preposto", "presidente",
+                    "pretensão", "previsto",
+                    "procedência", "procedente", 
+                    "processo", "processual",
+                    "provido", "provimento",
+                    "razão",
+                    "ré", "recurso", 
+                    "relator", "relatório", 
+                    "réu", "revisão",
+                    "sentença", "sucumbência", 
+                    "tribunal", "turma", 
+                    "unânime", "valor", "vara", "vítima")
+
+pt_direito_abr <- c("art", "cpc", "fls", "n", "tjsp")
+
+pt_wiki <- ptwikiwords %>% 
+  with(word) %>% 
+  head(1000)
+
+banned_raw <- c(pt_stops, pt_direito, pt_direito_abr, pt_wiki) %>% 
+  unique()
+
+banned <- banned_raw %>% 
+  ptstem_words(complete = FALSE) %>% 
+  unique() %>% 
+  abjutils::rm_accent()
+
+
+```
+
+--------------------------------------------------------------------------------
+
+```{r}
+clean_txt <- function(x, banned, banned_raw, wt = tm::weightTf) {
+  x %>% 
+    str_to_lower() %>%
+    str_replace_all('[\r\t\n ]+', ' ') %>% 
+    str_replace_all('º', '') %>% 
+    str_replace_all('([a-z§.]) ([0-9])', '\\1_\\2') %>% 
+    str_replace_all('[-–".$,():]', '') %>% 
+    str_replace_all('([0-9]) (§|e_|pará)', '\\1_\\2') %>%
+    str_replace_all('[\r\t\n ]+', ' ') %>% 
+    ptstem(n_char = 4, complete = FALSE, ignore = 'art.*|lei_.*|parág.*') %>% 
+    str_split(' +') %>%
+    map_df(enframe, .id = '.id') %>% 
+    filter(!value %in% banned_raw) %>% 
+    mutate(value = abjutils::rm_accent(value)) %>% 
+    filter(!value %in% banned) %>% 
+    count(.id, value) %>% 
+    ungroup() %>% 
+    tidytext::cast_dtm(.id, value, n, weighting = wt)
+}
+```
+
+```{r}
+set.seed(1)
+bag_dtm <- d_txt %>% 
+  sample_n(1000) %>% %>% 
+  with(ementa) %>% 
+  clean_txt(banned, banned_raw, wt = tm::weightTf)
+saveRDS(bag_dtm, 'bag_dtm.rds')
+```
+
+```{r}
+bag_dtm <- readRDS('bag_dtm.rds')
+lda_print <- function(lda, n_terms = 10) {
+  lda %>% 
+    tidytext::tidy() %>% 
+    group_by(topic) %>%
+    top_n(n_terms, beta) %>%
+    ungroup() %>%
+    arrange(topic, -beta) %>% 
+    group_by(topic) %>%
+    mutate(id = 1:n()) %>% 
+    ungroup() %>% 
+    select(-beta) %>% 
+    spread(topic, term) %>% 
+    head(n_terms)
+}
+```
+
+```{r}
+lda5 <- LDA(bag_dtm, k = 5, control = list(seed = 1234))
+lda_print(lda5)
+```
+
+```{r}
+lda4 <- LDA(bag_dtm, k = 4, control = list(seed = 1234))
+lda_print(lda4)
+```
+
+```{r}
+lda3 <- LDA(bag_dtm, k = 3, control = list(seed = 1234))
+lda_print(lda3)
+```
+
+```{r}
+lda2 <- LDA(bag_dtm, k = 2, control = list(seed = 1234))
+lda_print(lda2)
+```
+

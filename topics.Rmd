@@ -1,10 +1,14 @@
 ---
 title: "Topic models"
 date: "May 24, 2017"
-output: html_document
+output: 
+  pdf_document:
+    df_print: kable
 ---
 
 --------------------------------------------------------------------------------
+
+Rodei o modelo numa amostra de 5000 decisões. O algorito de stemming que estou usando é muito pesado e não generaliza. Vou rodar um modelão com as 130k+ decisões que baixei, mas acho que nao vai rodar a tempo. 
 
 ```{r}
 library(tidyverse)
@@ -20,11 +24,16 @@ d_txt <- readRDS('data-raw/cjsg.rds') %>%
   mutate(data_registro = dmy(data_registro)) %>% 
   arrange(desc(data_registro)) %>% 
   filter(year(data_registro) >= 2015)
+
+set.seed(1)
+d_amostra <- d_txt %>% sample_n(5000) 
 ```
 
 --------------------------------------------------------------------------------
 
-```{r}
+Aqui temos uma lista de banned word por vários motivos
+
+```{r, eval=FALSE}
 pt_stops <- tm::stopwords('pt-br')
 pt_direito     <- c("ação", "acolhimento", "acórdão",
                     "advocatício", "advogado", 
@@ -89,6 +98,8 @@ banned <- banned_raw %>%
 
 --------------------------------------------------------------------------------
 
+Algoritmo de limpar o texto
+
 ```{r}
 clean_txt <- function(x, banned, banned_raw, wt = tm::weightTf) {
   x %>% 
@@ -99,29 +110,40 @@ clean_txt <- function(x, banned, banned_raw, wt = tm::weightTf) {
     str_replace_all('[-–".$,():]', '') %>% 
     str_replace_all('([0-9]) (§|e_|pará)', '\\1_\\2') %>%
     str_replace_all('[\r\t\n ]+', ' ') %>% 
-    ptstem(n_char = 4, complete = FALSE, ignore = 'art.*|lei_.*|parág.*') %>% 
+    ptstem(n_char = 4, 
+           algorithm = 'hunspell',
+           complete = FALSE, 
+           ignore = 'art.*|lei_.*|parág.*') %>%
     str_split(' +') %>%
     map_df(enframe, .id = '.id') %>% 
     filter(!value %in% banned_raw) %>% 
     mutate(value = abjutils::rm_accent(value)) %>% 
     filter(!value %in% banned) %>% 
+    filter(!value %in% abjutils::rm_accent(banned_raw)) %>% 
     count(.id, value) %>% 
     ungroup() %>% 
     tidytext::cast_dtm(.id, value, n, weighting = wt)
 }
 ```
 
-```{r}
-set.seed(1)
-bag_dtm <- d_txt %>% 
-  sample_n(1000) %>% %>% 
+```{r, eval=FALSE}
+bag_dtm <- d_amostra %>% 
   with(ementa) %>% 
   clean_txt(banned, banned_raw, wt = tm::weightTf)
-saveRDS(bag_dtm, 'bag_dtm.rds')
+saveRDS(bag_dtm, 'bag_dtm2.rds')
+
+lda5 <- LDA(bag_dtm, k = 5, control = list(seed = 1234))
+lda4 <- LDA(bag_dtm, k = 4, control = list(seed = 1234))
+lda3 <- LDA(bag_dtm, k = 3, control = list(seed = 1234))
+lda2 <- LDA(bag_dtm, k = 2, control = list(seed = 1234))
+
+lda <- list(lda5, lda4, lda3, lda2)
+saveRDS(lda, 'lda.rds')
 ```
 
 ```{r}
 bag_dtm <- readRDS('bag_dtm.rds')
+lda <- readRDS('lda.rds')
 lda_print <- function(lda, n_terms = 10) {
   lda %>% 
     tidytext::tidy() %>% 
@@ -138,23 +160,76 @@ lda_print <- function(lda, n_terms = 10) {
 }
 ```
 
+# Resultados dos modelos de tópicos
+
+Essas tabelas mostram as principais palavras encontradas para cada modelo LDA ajustado (com 5 tópicos, 4 tópicos, 3 tópicos, 2 tópicos).
+
+5 topicos
+
 ```{r}
-lda5 <- LDA(bag_dtm, k = 5, control = list(seed = 1234))
-lda_print(lda5)
+lda_print(lda[[1]])
+```
+
+4 topicos
+
+```{r}
+lda_print(lda[[2]])
+```
+
+3 topicos
+
+```{r}
+lda_print(lda[[3]])
+```
+
+2 topicos
+
+```{r}
+lda_print(lda[[4]])
+```
+
+# Cruzando tópicos com classe/assunto
+
+Essas tabelas mostram quais são as 5 combinações de classe/assunto mais frequentes em cada tópico, considerando cada modelo de tópicos (com 5 tópicos, 4 tópicos, etc).
+
+```{r}
+d_lda <- d_amostra %>% 
+  mutate(lda5 = topics(lda[[1]]),
+         lda4 = topics(lda[[2]]),
+         lda3 = topics(lda[[3]]),
+         lda2 = topics(lda[[4]]))
+```
+
+LDA com 5 grupos
+
+```{r}
+d_lda %>% 
+  count(lda5, classe_assunto) %>% 
+  arrange(lda5, desc(n)) %>% 
+  top_n(5)
+```
+
+LDA com 4 grupos
+
+```{r}
+d_lda %>% 
+  count(lda4, classe_assunto) %>% 
+  arrange(lda4, desc(n)) %>% 
+  top_n(5)
 ```
 
 ```{r}
-lda4 <- LDA(bag_dtm, k = 4, control = list(seed = 1234))
-lda_print(lda4)
+d_lda %>% 
+  count(lda3, classe_assunto) %>% 
+  arrange(lda3, desc(n)) %>% 
+  top_n(5)
+
 ```
 
 ```{r}
-lda3 <- LDA(bag_dtm, k = 3, control = list(seed = 1234))
-lda_print(lda3)
-```
-
-```{r}
-lda2 <- LDA(bag_dtm, k = 2, control = list(seed = 1234))
-lda_print(lda2)
+d_lda %>% 
+  count(lda2, classe_assunto) %>% 
+  arrange(lda2, desc(n)) %>% 
+  top_n(5)
 ```
 

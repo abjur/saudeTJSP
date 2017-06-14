@@ -140,7 +140,7 @@ cposg_um <- function (p, path, ow) {
   }
 }
 
-result <- purrr::map_df(2015:2008, ~{
+result <- purrr::map_df(2013:2008, ~{
   cat(glue::glue('\n\n{.x}-------------------\n\n'), sep = '\n')
   pasta <- glue::glue('data-raw/cpopg{.x}')
   dir.create(pasta, recursive = TRUE, showWarnings = FALSE)
@@ -157,6 +157,56 @@ result <- purrr::map_df(2015:2008, ~{
   parallel::stopCluster(cl)
   bind_rows(l)
 }, .id = 'ano')
+
+```
+
+
+
+```{r}
+decisoes_cposg_um <- function(html) {
+  xpath <- '(//table[@width="98%" and @align="center"])[last()]'
+  r <- rvest::html_node(html, xpath = xpath)
+  tab <- rvest::html_table(r)
+  names(tab) <- c('data', 'situacao', 'decisao')
+  tab$result <- 'OK'
+  return(tab)
+}
+
+arqs <- c('data-raw/cpopg2017',
+          'data-raw/cpopg2016',
+          'data-raw/cpopg2015') %>% 
+  map(dir, full.names = TRUE, pattern = 'html$') %>% 
+  unlist()
+a <- arqs
+p <- progress::progress_bar$new(total = length(a))
+
+f <- function(.x) {
+  rds <- stringr::str_replace(.x, 'html$', 'rds')
+  if (!file.exists(rds)) {
+    html <- xml2::read_html(.x)
+    infos <- esaj:::parse_cpopg_infos_(html)
+    partes <- esaj:::parse_cpopg_partes_(html)
+    decisoes <- decisoes_cposg_um(html)
+    result <- list(infos = infos, partes = partes, decisoes = decisoes)
+    saveRDS(result, rds)
+  } else {
+    result <- tibble(result = 'ja foi')
+  }
+  p$tick()
+  result
+}
+ff <- purrr::possibly(f, tibble(result = 'erro'))
+result <- purrr::map_df(a, ff, .id = '.id')
+```
+
+```{r}
+d <- 'data-raw/cpopg2016' %>% 
+  dir(full.names = TRUE, pattern = '\\.rds$') %>% 
+  enframe('id', 'arq') %>% 
+  group_by(id, arq) %>% 
+  do(aff = readRDS(.$arq)) %>% 
+  ungroup() %>% 
+  as_tibble()
 
 ```
 

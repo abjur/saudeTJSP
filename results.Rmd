@@ -1,0 +1,156 @@
+---
+title: "Untitled"
+author: "J"
+date: "May 25, 2017"
+output: html_document
+---
+
+# Slide 1: setup
+
+- Baixadas xxx decisões do TJSP registradas entre 01/01/2015 e maio/2017
+- Filtros: 
+    - Assuntos: Planos de saúde, terceirização do SUS, erro médico, custeio de assistência médica, comercialização e ou utilização sem restrições de medicamentos
+    - Retirados embargos e agravos
+
+Nesta análise: amostra de 5000 decisões.
+
+O que foi feito
+
+- Leitura das ementas
+- Limpeza dos textos (palavras comuns do direito, palavras comuns do português, extração dos radicais das palavras (stemming), acentos, entre outros).
+- Aplicação de modelo de tópicos: Latent Dirichlet Allocation
+    - formação de 5 grupos de processos.
+    - levantamento das 10 palavras mais relevantes em cada grupo.
+- Tabela de valor da causa por grupo
+- Tabela de resultados dos recursos por grupo 
+
+
+```{r}
+
+```
+
+
+```{r}
+tipos_decisao <- function(decisoes) {
+  negaram <- regex('negaram|n[ãa]o conhe|prejud|n[ãa]o prov|desprov', ignore_case = TRUE)
+  parcial <- regex('parcial|parte', ignore_case = TRUE)
+  deram <- regex('deram|prov', ignore_case = TRUE)
+  dilig <- regex('dilig', ignore_case = TRUE)
+  ifelse(
+    str_detect(decisoes, negaram), 'negado', ifelse(
+      str_detect(decisoes, parcial), 'parcial', ifelse(
+        str_detect(decisoes, deram), 'provido', ifelse(
+          str_detect(decisoes, dilig), 'outros', 
+                     'outros'
+    ))))
+}
+```
+
+
+```{r}
+arqs <- c('data-raw/cpopg2017', 
+          'data-raw/cpopg2016', 
+          'data-raw/cpopg2015') %>% 
+  map(dir, full.names = TRUE, pattern = 'rds$') %>% 
+  unlist()
+
+arqs_amostra <- d_amostra %>% 
+  transmute(ano_registro = year(data_registro),
+            n_processo = str_replace_all(n_processo, '[^0-9]', ''),
+            arq = sprintf('data-raw/cpopg%s/%s.rds', 
+                          ano_registro, n_processo),
+            existe = file.exists(arq))
+
+safe_read <- possibly(readRDS, list(decisoes = tibble(result = 'erro')))
+
+d_decisoes <- arqs_amostra %>% 
+  filter(existe) %>% 
+  group_by(n_processo, arq) %>% 
+  do(safe_read(.$arq)$decisoes) %>% 
+  ungroup() %>% 
+  as_tibble() %>% 
+  mutate(data = dmy(data)) %>% 
+  mutate(n_processo = str_replace_all(basename(arq), '[^0-9]', '')) %>% 
+  filter(situacao == 'Julgado', !is.na(decisao)) %>% 
+  arrange(desc(data)) %>% 
+  distinct(n_processo, data, .keep_all = TRUE)
+
+safe_read2 <- possibly(readRDS, list(infos = tibble(result = 'erro')))
+d_infos <- arqs_amostra %>% 
+  filter(existe) %>% 
+  group_by(n_processo, arq) %>% 
+  do(safe_read2(.$arq)$infos) %>% 
+  ungroup() %>% 
+  as_tibble()
+
+loc <- locale(decimal_mark = ',', grouping_mark = ".")
+d_valores <- d_infos %>% 
+  filter(key == 'valor_da_acao') %>% 
+  mutate(valor = parse_number(value, locale = loc)) %>% 
+  select(n_processo, valor)
+
+d_lda2 <- mutate(d_lda, n_processo = str_replace_all(n_processo, '[^0-9]', ''))
+d_total <- d_decisoes %>% 
+  mutate(decisao_cl = tipos_decisao(decisao)) %>% 
+  inner_join(d_lda2, 'n_processo') %>% 
+  inner_join(d_valores, 'n_processo')
+```
+
+```{r}
+tab_np <- d_total %>% 
+  count(lda5, decisao_cl) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  ungroup() %>% 
+  mutate(np = sprintf('%s (%s)', n, scales::percent(prop))) %>% 
+  select(-n, -prop) %>% 
+  spread(decisao_cl, np, fill = '0 (0.0%)')
+tab_n <- d_total %>% 
+  count(lda5, decisao_cl) %>% 
+  ungroup() %>% 
+  spread(decisao_cl, n, fill = 0)
+tab_p <- d_total %>% 
+  count(lda5, decisao_cl) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  ungroup() %>% 
+  select(-n) %>% 
+  spread(decisao_cl, prop, fill = 0)
+```
+
+# Slide 2: grupos
+
+# Slide 3: valores
+
+```{r}
+tab_valores <- d_total %>% 
+  group_by(lda5) %>% 
+  summarise(n = n(), 
+            media = mean(valor), 
+            dp = sd(valor))
+tab_valores
+```
+
+```{r}
+library(openxlsx)
+wb <- openxlsx::createWorkbook()
+addWorksheet(wb, 'topics')
+addWorksheet(wb, 'valores')
+addWorksheet(wb, 'decisao_n')
+addWorksheet(wb, 'decisao_p')
+addWorksheet(wb, 'decisao_np')
+
+writeData(wb, sheet = 1, lda_print(lda[[1]]))
+writeData(wb, sheet = 2, tab_valores)
+writeData(wb, sheet = 3, tab_n)
+writeData(wb, sheet = 4, tab_p)
+writeData(wb, sheet = 5, tab_np)
+
+saveWorkbook(wb, 'results.xlsx')
+```
+
+
+# Slide 4: resultados
+
+```{r}
+
+```
+
